@@ -1,5 +1,5 @@
 // bolo — Cloudflare Worker brain v3
-// KeylessAI + OpenRouter free models + Memory (KV) + Research + Run
+// KeylessAI + OpenRouter free models + Memory (KV) + Research + Run + Log
 
 const KEYLESS_API = 'https://hermes.ai.unturf.com/v1';
 const KEYLESS_MODEL = 'adamo1139/Hermes-3-Llama-3.1-8B-FP8-Dynamic';
@@ -61,9 +61,9 @@ export default {
     // Health check
     if (path === '/status') {
       return new Response(JSON.stringify({
-        status: 'alive', version: '3.0',
+        status: 'alive', version: '3.1',
         time: new Date().toISOString(),
-        capabilities: ['chat', 'research', 'run', 'memory', 'models', 'status'],
+        capabilities: ['chat', 'research', 'run', 'memory', 'models', 'status', 'log'],
         ai_backends: ['keyless-hermes', 'pollinations', 'openrouter-free']
       }), { headers: cors });
     }
@@ -139,6 +139,21 @@ export default {
       }
     }
 
+    // Activity log
+    if (path === '/log' && request.method === 'POST') {
+      try {
+        const { event, data } = await request.json();
+        if (env.BOLO_KV) {
+          const logKey = `log_${Date.now()}`;
+          await env.BOLO_KV.put(logKey, JSON.stringify({ event, data, time: new Date().toISOString() }), { expirationTtl: 86400 * 7 });
+          return new Response(JSON.stringify({ logged: true, key: logKey }), { headers: cors });
+        }
+        return new Response(JSON.stringify({ logged: false, reason: 'KV not configured' }), { headers: cors });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: cors });
+      }
+    }
+
     // Trigger GitHub Actions
     if (path === '/run' && request.method === 'POST') {
       try {
@@ -161,6 +176,7 @@ export default {
       }
     }
 
-    return new Response(JSON.stringify({ error: 'Not found', paths: ['/status', '/models', '/chat', '/research', '/memory', '/run'] }), { status: 404, headers: cors });
+    return new Response(JSON.stringify({ error: 'Not found', paths: ['/status', '/models', '/chat', '/research', '/memory', '/run', '/log'] }), { status: 404, headers: cors });
   }
 };
+
