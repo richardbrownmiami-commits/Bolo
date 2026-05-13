@@ -2,30 +2,65 @@ name: Auto Research
 
 on:
   schedule:
-    - cron: '0 */6 * * *'  # every 6 hours
+    - cron: '0 */6 * * *'
   workflow_dispatch:
     inputs:
       topic:
         description: 'Research topic'
         required: false
-        default: 'latest AI tools and free APIs 2025'
+        default: 'latest free AI tools and APIs 2025'
 
 jobs:
   research:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_TOKEN }}
 
       - name: Research via bolo worker
         run: |
-          TOPIC="${{ github.event.inputs.topic || 'latest AI tools and free APIs 2025' }}"
-          echo "Researching: $TOPIC"
-          RESULT=$(curl -s -X POST https://bolo.richard-brown-miami.workers.dev/research \
+          TOPIC="${{ github.event.inputs.topic || 'latest free AI tools and APIs 2025' }}"
+          echo "## Research: $TOPIC" > /tmp/new_finding.txt
+          echo "Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> /tmp/new_finding.txt
+          echo "" >> /tmp/new_finding.txt
+          curl -s --max-time 25 -X POST https://bolo.richard-brown-miami.workers.dev/research \
             -H "Content-Type: application/json" \
-            -d "{\"topic\":\"$TOPIC\"}")
-          echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('findings','No findings'))"
+            -d "{\"topic\":\"$TOPIC\"}" | python3 -c "
+          import sys, json
+          try:
+              d = json.load(sys.stdin)
+              print(d.get('findings', 'No findings returned'))
+              print('')
+              print('Backend:', d.get('backend', 'unknown'))
+          except Exception as e:
+              print('Parse error:', str(e))
+          " >> /tmp/new_finding.txt 2>&1 || echo "Research call failed" >> /tmp/new_finding.txt
 
-      - name: Self-improvement check
+      - name: Check free OpenRouter models
         run: |
-          echo "Checking for new free AI APIs..."
-          curl -s https://text.pollinations.ai/List+5+new+free+AI+APIs+available+in+2025+with+no+API+key+required | head -c 500
+          echo "" >> /tmp/new_finding.txt
+          echo "## Free OpenRouter Models ($(date -u +%Y-%m-%d))" >> /tmp/new_finding.txt
+          curl -s --max-time 15 "https://openrouter.ai/api/v1/models" | python3 -c "
+          import sys, json
+          try:
+              data = json.load(sys.stdin)
+              free = [m for m in data.get('data',[]) if str(m.get('pricing',{}).get('prompt','1'))=='0']
+              print(f'Total free models: {len(free)}')
+              for m in free[:8]:
+                  print(f'- {m.get('\"id\"', 'unknown')} (ctx:{m.get('\"context_length\"','?')})')
+          except Exception as e:
+              print('Error:', str(e))
+          " >> /tmp/new_finding.txt 2>&1 || echo "OpenRouter check failed" >> /tmp/new_finding.txt
+
+      - name: Append to findings.md and commit
+        run: |
+          echo "" >> findings.md
+          echo "---" >> findings.md
+          cat /tmp/new_finding.txt >> findings.md
+          git config user.email "bolo-bot@auto.dev"
+          git config user.name "Bolo Bot"
+          git add findings.md
+          git diff --staged --quiet || git commit -m "research: auto findings $(date -u +%Y-%m-%d)"
+          git push
+
