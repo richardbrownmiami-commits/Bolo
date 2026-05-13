@@ -1,0 +1,31 @@
+name: Auto Research
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # every 6 hours
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: 'Research topic'
+        required: false
+        default: 'latest AI tools and free APIs 2025'
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Research via bolo worker
+        run: |
+          TOPIC="${{ github.event.inputs.topic || 'latest AI tools and free APIs 2025' }}"
+          echo "Researching: $TOPIC"
+          RESULT=$(curl -s -X POST https://bolo.richard-brown-miami.workers.dev/research \
+            -H "Content-Type: application/json" \
+            -d "{\"topic\":\"$TOPIC\"}")
+          echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('findings','No findings'))"
+
+      - name: Self-improvement check
+        run: |
+          echo "Checking for new free AI APIs..."
+          curl -s https://text.pollinations.ai/List+5+new+free+AI+APIs+available+in+2025+with+no+API+key+required | head -c 500
