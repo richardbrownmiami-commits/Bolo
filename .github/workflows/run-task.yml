@@ -1,0 +1,26 @@
+name: Run Task
+
+on:
+  repository_dispatch:
+    types: [run-task]
+  workflow_dispatch:
+    inputs:
+      task:
+        description: 'Bash task to run'
+        required: true
+        default: 'echo hello from bolo'
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run task
+        run: |
+          TASK="${{ github.event.client_payload.task || github.event.inputs.task }}"
+          echo "Running: $TASK"
+          eval "$TASK"
+
+      - name: Log result
+        run: echo "Task completed at $(date)"
