@@ -1,5 +1,5 @@
-// bolo — Cloudflare Worker brain v3.3
-// KeylessAI + Pollinations fallback + Memory (KV) + Research + Run + Log + /logs/list
+// bolo — Cloudflare Worker brain v3.4
+// KeylessAI + Pollinations fallback + Memory (KV) + Research + Run + Log + /logs/list + /queue
 
 const KEYLESS_API = 'https://hermes.ai.unturf.com/v1';
 const KEYLESS_MODEL = 'adamo1139/Hermes-3-Llama-3.1-8B-FP8-Dynamic';
@@ -36,7 +36,6 @@ async function callKeylessWithFallback(messages, maxTokens = 500) {
     const reply = await callKeylessAI(messages, maxTokens);
     return { reply, model: KEYLESS_MODEL, backend_used: 'keyless' };
   } catch (err) {
-    // Fallback to Pollinations
     const prompt = messages.map(m => m.content).join('\n');
     const reply = await callPollinations(prompt);
     return { reply, model: 'pollinations/text', backend_used: 'pollinations_fallback', keyless_error: err.message };
@@ -53,11 +52,11 @@ export default {
     // Health check
     if (path === '/status') {
       return new Response(JSON.stringify({
-        status: 'alive', version: '3.3',
+        status: 'alive', version: '3.4',
         time: new Date().toISOString(),
-        capabilities: ['chat', 'research', 'run', 'memory', 'models', 'status', 'log', 'logs/list'],
+        capabilities: ['chat', 'research', 'run', 'memory', 'models', 'status', 'log', 'logs/list', 'queue'],
         ai_backends: ['keyless-hermes', 'pollinations', 'openrouter-free'],
-        notes: 'keyless auto-falls-back to pollinations on failure'
+        notes: 'keyless auto-falls-back to pollinations on failure. v3.4: async queue submission added.'
       }), { headers: cors });
     }
 
@@ -99,7 +98,6 @@ export default {
           model = 'mistralai/mistral-7b-instruct:free';
           backend_used = 'openrouter';
         } else {
-          // keyless with pollinations fallback
           const result = await callKeylessWithFallback([
             { role: 'system', content: 'You are bolo, an autonomous agent. Be concise.' },
             { role: 'user', content: message }
@@ -123,7 +121,6 @@ export default {
           { role: 'user', content: `Research: ${topic}` }
         ], 800);
 
-        // Save to KV if available
         if (env.BOLO_KV) {
           const researchKey = `research_${Date.now()}`;
           await env.BOLO_KV.put(researchKey, JSON.stringify({
@@ -198,6 +195,22 @@ export default {
       }
     }
 
+    // Async queue submission
+    if (path === '/queue' && request.method === 'POST') {
+      try {
+        const body = await request.json();
+        const { task, priority = 'normal' } = body;
+        if (env.BOLO_QUEUE) {
+          await env.BOLO_QUEUE.send({ task, priority, submitted: new Date().toISOString() });
+          return new Response(JSON.stringify({ queued: true, task, priority }), { headers: cors });
+        }
+        // Fallback: Queue not bound, advise /run
+        return new Response(JSON.stringify({ queued: false, reason: 'Queue not bound, use /run instead', task, priority }), { headers: cors });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: cors });
+      }
+    }
+
     // Trigger GitHub Actions
     if (path === '/run' && request.method === 'POST') {
       try {
@@ -220,6 +233,6 @@ export default {
       }
     }
 
-    return new Response(JSON.stringify({ error: 'Not found', paths: ['/status', '/models', '/chat', '/research', '/memory', '/run', '/log', '/logs/list'] }), { status: 404, headers: cors });
+    return new Response(JSON.stringify({ error: 'Not found', paths: ['/status', '/models', '/chat', '/research', '/memory', '/run', '/log', '/logs/list', '/queue'] }), { status: 404, headers: cors });
   }
 };
