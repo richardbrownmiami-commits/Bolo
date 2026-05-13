@@ -2,13 +2,13 @@ name: Auto Research
 
 on:
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: "0 */6 * * *"
   workflow_dispatch:
     inputs:
       topic:
-        description: 'Research topic'
+        description: "Research topic"
         required: false
-        default: 'latest free AI tools and APIs 2025'
+        default: "latest free AI tools and APIs 2025"
 
 jobs:
   research:
@@ -24,9 +24,7 @@ jobs:
           echo "## Research: $TOPIC" > /tmp/new_finding.txt
           echo "Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> /tmp/new_finding.txt
           echo "" >> /tmp/new_finding.txt
-          curl -s --max-time 25 -X POST https://bolo.richard-brown-miami.workers.dev/research \
-            -H "Content-Type: application/json" \
-            -d "{\"topic\":\"$TOPIC\"}" | python3 -c "
+          curl -s --max-time 25 -X POST https://bolo.richard-brown-miami.workers.dev/research             -H "Content-Type: application/json"             -d "{\"topic\":\"$TOPIC\"}" | python3 -c "
           import sys, json
           try:
               d = json.load(sys.stdin)
@@ -38,20 +36,25 @@ jobs:
           " >> /tmp/new_finding.txt 2>&1 || echo "Research call failed" >> /tmp/new_finding.txt
 
       - name: Check free OpenRouter models
+        shell: bash
         run: |
           echo "" >> /tmp/new_finding.txt
           echo "## Free OpenRouter Models ($(date -u +%Y-%m-%d))" >> /tmp/new_finding.txt
-          curl -s --max-time 15 "https://openrouter.ai/api/v1/models" | python3 -c "
-          import sys, json
-          try:
-              data = json.load(sys.stdin)
-              free = [m for m in data.get('data',[]) if str(m.get('pricing',{}).get('prompt','1'))=='0']
-              print(f'Total free models: {len(free)}')
-              for m in free[:8]:
-                  print(f'- {m.get('\"id\"', 'unknown')} (ctx:{m.get('\"context_length\"','?')})')
-          except Exception as e:
-              print('Error:', str(e))
-          " >> /tmp/new_finding.txt 2>&1 || echo "OpenRouter check failed" >> /tmp/new_finding.txt
+          curl -s --max-time 15 "https://openrouter.ai/api/v1/models" > /tmp/or_models.json
+          python3 - << 'PYEOF' >> /tmp/new_finding.txt
+import json
+try:
+    with open('/tmp/or_models.json') as f:
+        data = json.load(f)
+    free = [m for m in data.get("data",[]) if str(m.get("pricing",{}).get("prompt","1"))=="0"]
+    print(f"Total free models: {len(free)}")
+    for m in free[:10]:
+        model_id = m.get("id") or m.get("slug") or "unknown"
+        ctx = m.get("context_length", "?")
+        print(f"- {model_id} (ctx:{ctx})")
+except Exception as e:
+    print("Error:", str(e))
+PYEOF
 
       - name: Append to findings.md and commit
         run: |
@@ -63,4 +66,3 @@ jobs:
           git add findings.md
           git diff --staged --quiet || git commit -m "research: auto findings $(date -u +%Y-%m-%d)"
           git push
-
