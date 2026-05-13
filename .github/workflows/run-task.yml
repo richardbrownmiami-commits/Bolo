@@ -17,6 +17,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run task
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_OWNER: ${{ secrets.GH_OWNER }}
         run: |
           TASK="${{ github.event.client_payload.task || github.event.inputs.task }}"
           echo "Running: $TASK"
