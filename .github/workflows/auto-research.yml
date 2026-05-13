@@ -24,7 +24,7 @@ jobs:
           echo "## Research: $TOPIC" > /tmp/new_finding.txt
           echo "Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> /tmp/new_finding.txt
           echo "" >> /tmp/new_finding.txt
-          curl -s --max-time 25 -X POST https://bolo.richard-brown-miami.workers.dev/research             -H "Content-Type: application/json"             -d "{\"topic\":\"$TOPIC\"}" | python3 -c "
+          curl -s --max-time 25 -X POST https://bolo.richard-brown-miami.workers.dev/research             -H "Content-Type: application/json"             -d "{"topic":"$TOPIC"}" | python3 -c "
           import sys, json
           try:
               d = json.load(sys.stdin)
