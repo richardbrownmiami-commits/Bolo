@@ -1,5 +1,5 @@
-// bolo — Cloudflare Worker brain v3.4
-// KeylessAI + Pollinations fallback + Memory (KV) + Research + Run + Log + /logs/list + /queue
+// bolo — Cloudflare Worker brain v3.5
+// KeylessAI + Pollinations fallback + Memory (KV) + Research + Run + Log + /logs/list + /queue + Queue Consumer
 
 const KEYLESS_API = 'https://hermes.ai.unturf.com/v1';
 const KEYLESS_MODEL = 'adamo1139/Hermes-3-Llama-3.1-8B-FP8-Dynamic';
@@ -49,18 +49,16 @@ export default {
 
     if (request.method === 'OPTIONS') return new Response(null, { headers: cors });
 
-    // Health check
     if (path === '/status') {
       return new Response(JSON.stringify({
-        status: 'alive', version: '3.4',
+        status: 'alive', version: '3.5',
         time: new Date().toISOString(),
-        capabilities: ['chat', 'research', 'run', 'memory', 'models', 'status', 'log', 'logs/list', 'queue'],
+        capabilities: ['chat', 'research', 'run', 'memory', 'models', 'status', 'log', 'logs/list', 'queue', 'queue-consumer'],
         ai_backends: ['keyless-hermes', 'pollinations', 'openrouter-free'],
-        notes: 'keyless auto-falls-back to pollinations on failure. v3.4: async queue submission added.'
+        notes: 'v3.5: queue consumer added - processes queued tasks automatically and saves receipt to KV.'
       }), { headers: cors });
     }
 
-    // List available models
     if (path === '/models') {
       return new Response(JSON.stringify({
         keyless: [KEYLESS_MODEL],
@@ -74,7 +72,6 @@ export default {
       }), { headers: cors });
     }
 
-    // AI chat — supports multiple backends
     if (path === '/chat' && request.method === 'POST') {
       try {
         const { message = 'Hello', backend = 'keyless' } = await request.json();
@@ -112,7 +109,6 @@ export default {
       }
     }
 
-    // Research endpoint
     if (path === '/research' && request.method === 'POST') {
       try {
         const { topic = 'AI capabilities' } = await request.json();
@@ -120,7 +116,6 @@ export default {
           { role: 'system', content: 'You are a research assistant. Give structured findings: Summary, Key Facts (3-5 points), Recommendations.' },
           { role: 'user', content: `Research: ${topic}` }
         ], 800);
-
         if (env.BOLO_KV) {
           const researchKey = `research_${Date.now()}`;
           await env.BOLO_KV.put(researchKey, JSON.stringify({
@@ -128,7 +123,6 @@ export default {
             time: new Date().toISOString()
           }), { expirationTtl: 86400 * 30 });
         }
-
         return new Response(JSON.stringify({
           topic, findings: result.reply, model: result.model,
           backend: result.backend_used, timestamp: new Date().toISOString()
@@ -138,7 +132,6 @@ export default {
       }
     }
 
-    // Memory store
     if (path === '/memory') {
       try {
         if (request.method === 'POST') {
@@ -162,7 +155,6 @@ export default {
       }
     }
 
-    // Activity log — write
     if (path === '/log' && request.method === 'POST') {
       try {
         const { event, data } = await request.json();
@@ -177,17 +169,22 @@ export default {
       }
     }
 
-    // List recent logs
     if (path === '/logs/list' && request.method === 'GET') {
       try {
         if (env.BOLO_KV) {
           const list = await env.BOLO_KV.list({ prefix: 'log_', limit: 20 });
+          const qlist = await env.BOLO_KV.list({ prefix: 'queue_processed_', limit: 10 });
           const logs = [];
           for (const key of list.keys) {
             const val = await env.BOLO_KV.get(key.name);
             if (val) logs.push({ key: key.name, ...JSON.parse(val) });
           }
-          return new Response(JSON.stringify({ count: logs.length, logs }), { headers: cors });
+          const queueProcessed = [];
+          for (const key of qlist.keys) {
+            const val = await env.BOLO_KV.get(key.name);
+            if (val) queueProcessed.push({ key: key.name, ...JSON.parse(val) });
+          }
+          return new Response(JSON.stringify({ count: logs.length, logs, queue_processed_count: queueProcessed.length, queue_processed: queueProcessed }), { headers: cors });
         }
         return new Response(JSON.stringify({ error: 'KV not configured' }), { headers: cors });
       } catch (err) {
@@ -195,7 +192,6 @@ export default {
       }
     }
 
-    // Async queue submission
     if (path === '/queue' && request.method === 'POST') {
       try {
         const body = await request.json();
@@ -204,14 +200,12 @@ export default {
           await env.BOLO_QUEUE.send({ task, priority, submitted: new Date().toISOString() });
           return new Response(JSON.stringify({ queued: true, task, priority }), { headers: cors });
         }
-        // Fallback: Queue not bound, advise /run
         return new Response(JSON.stringify({ queued: false, reason: 'Queue not bound, use /run instead', task, priority }), { headers: cors });
       } catch (err) {
         return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: cors });
       }
     }
 
-    // Trigger GitHub Actions
     if (path === '/run' && request.method === 'POST') {
       try {
         const { task = 'echo hello' } = await request.json();
@@ -234,5 +228,19 @@ export default {
     }
 
     return new Response(JSON.stringify({ error: 'Not found', paths: ['/status', '/models', '/chat', '/research', '/memory', '/run', '/log', '/logs/list', '/queue'] }), { status: 404, headers: cors });
+  },
+
+  async queue(batch, env) {
+    for (const msg of batch.messages) {
+      const { task, priority } = msg.body;
+      if (env.BOLO_KV) {
+        await env.BOLO_KV.put(
+          `queue_processed_${Date.now()}`,
+          JSON.stringify({ task, priority, processed: new Date().toISOString() }),
+          { expirationTtl: 86400 * 7 }
+        );
+      }
+      msg.ack();
+    }
   }
 };
