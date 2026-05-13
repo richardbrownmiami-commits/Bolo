@@ -12,3 +12,8 @@ id = "23e533156f824dc7a11efeb28bf467b3"
 [[queues.producers]]
 binding = "BOLO_QUEUE"
 queue = "bolo-tasks"
+
+[[queues.consumers]]
+queue = "bolo-tasks"
+max_batch_size = 10
+max_batch_timeout = 5
