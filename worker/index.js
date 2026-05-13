@@ -1,5 +1,5 @@
-// bolo — Cloudflare Worker brain v3.8
-// KeylessAI + Pollinations fallback (w/ User-Agent) + Memory (KV) + Research + Run + Log + /logs/list + /queue + Queue Consumer + /summary
+// bolo — Cloudflare Worker brain v3.9
+// KeylessAI + Pollinations fallback + Memory (KV) + Research + Run + Log + /logs/list + /queue + Queue Consumer + /summary + Cron Scheduled Research
 
 const KEYLESS_API = 'https://hermes.ai.unturf.com/v1';
 const KEYLESS_MODEL = 'adamo1139/Hermes-3-Llama-3.1-8B-FP8-Dynamic';
@@ -37,7 +37,7 @@ async function callKeylessAI(messages, maxTokens = 500) {
 async function callPollinations(prompt) {
   const encoded = encodeURIComponent(prompt);
   const res = await fetch(`${POLLINATIONS_API}/${encoded}`, {
-    headers: { 'User-Agent': 'bolo-agent/3.8' }
+    headers: { 'User-Agent': 'bolo-agent/3.9' }
   });
   if (!res.ok) throw new Error(`Pollinations ${res.status}`);
   return await res.text();
@@ -63,18 +63,18 @@ export default {
 
     if (path === '/status') {
       return new Response(JSON.stringify({
-        status: 'alive', version: '3.8',
+        status: 'alive', version: '3.9',
         time: new Date().toISOString(),
-        capabilities: ['chat', 'research', 'run', 'memory', 'models', 'status', 'log', 'logs/list', 'queue', 'queue-consumer', 'summary'],
+        capabilities: ['chat', 'research', 'run', 'memory', 'models', 'status', 'log', 'logs/list', 'queue', 'queue-consumer', 'summary', 'latest-research', 'cron-research'],
         ai_backends: ['keyless-hermes', 'pollinations-ua', 'openrouter-free'],
-        notes: 'v3.8: Added /summary endpoint for full system state.',
+        notes: 'v3.9: Added Cloudflare cron scheduled research every 6h. /latest-research endpoint shows last cron result.',
       }), { headers: cors });
     }
 
     if (path === '/models') {
       return new Response(JSON.stringify({
         keyless: [KEYLESS_MODEL],
-        pollinations: ['text.pollinations.ai (free, no key, User-Agent: bolo-agent/3.8)'],
+        pollinations: ['text.pollinations.ai (free, no key, User-Agent: bolo-agent/3.9)'],
         openrouter_free: [
           'google/gemma-3-27b-it:free',
           'mistralai/mistral-7b-instruct:free',
@@ -87,11 +87,12 @@ export default {
     if (path === '/summary') {
       try {
         const summary = {
-          version: '3.8',
+          version: '3.9',
           worker: 'https://bolo.richard-brown-miami.workers.dev',
-          endpoints: ['/status', '/chat', '/research', '/run', '/memory', '/log', '/logs/list', '/models', '/queue', '/summary'],
+          endpoints: ['/status', '/chat', '/research', '/run', '/memory', '/log', '/logs/list', '/models', '/queue', '/summary', '/latest-research'],
           ai_backends: ['keyless-hermes (Hermes-3, 82k ctx)', 'pollinations-ua (free, no key)', 'openrouter-free (29 models)'],
           github_actions: ['deploy-worker', 'run-task', 'auto-research (6h cron)'],
+          cron: 'Cloudflare scheduled trigger every 6h — no GitHub Actions needed for research cycle',
           kv_memory: 'active',
           queue: 'active (bolo-tasks)',
         };
@@ -100,8 +101,22 @@ export default {
           if (state) summary.latest_state = JSON.parse(state).value;
           const findings = await env.BOLO_KV.get('agent_frameworks_research');
           if (findings) summary.research = JSON.parse(findings).value;
+          const latest = await env.BOLO_KV.get('latest_research');
+          if (latest) summary.latest_cron_research = JSON.parse(latest);
         }
         return new Response(JSON.stringify(summary, null, 2), { headers: cors });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: cors });
+      }
+    }
+
+    if (path === '/latest-research') {
+      try {
+        if (env.BOLO_KV) {
+          const latest = await env.BOLO_KV.get('latest_research');
+          if (latest) return new Response(latest, { headers: cors });
+        }
+        return new Response(JSON.stringify({ message: 'No cron research yet' }), { headers: cors });
       } catch (err) {
         return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: cors });
       }
@@ -157,7 +172,7 @@ export default {
         } catch (e) {
           const encoded = encodeURIComponent(`Research ${topic}: give summary, key facts, and recommendations`);
           const pfRes = await fetch(`https://text.pollinations.ai/${encoded}`, {
-            headers: { 'User-Agent': 'bolo-agent/3.8' }
+            headers: { 'User-Agent': 'bolo-agent/3.9' }
           });
           findings = await pfRes.text();
           backend = 'pollinations-fallback';
@@ -271,7 +286,7 @@ export default {
       }
     }
 
-    return new Response(JSON.stringify({ error: 'Not found', paths: ['/status', '/models', '/chat', '/research', '/memory', '/run', '/log', '/logs/list', '/queue', '/summary'] }), { status: 404, headers: cors });
+    return new Response(JSON.stringify({ error: 'Not found', paths: ['/status', '/models', '/chat', '/research', '/memory', '/run', '/log', '/logs/list', '/queue', '/summary', '/latest-research'] }), { status: 404, headers: cors });
   },
 
   async queue(batch, env) {
@@ -285,6 +300,48 @@ export default {
         );
       }
       msg.ack();
+    }
+  },
+
+  async scheduled(event, env, ctx) {
+    // Auto-research cron — runs every 6 hours via Cloudflare trigger
+    const topics = [
+      'new free AI APIs and tools for autonomous agents',
+      'Cloudflare Workers new features and capabilities',
+      'open source autonomous AI agent frameworks',
+      'free vector databases and memory systems for AI',
+    ];
+    const topic = topics[Math.floor(Date.now() / (6 * 3600 * 1000)) % topics.length];
+
+    try {
+      const findings = await callKeylessAI([
+        { role: 'system', content: 'Research assistant. Give structured findings: Summary, Key Facts (3-5), Recommendations.' },
+        { role: 'user', content: `Research: ${topic}` }
+      ], 600);
+
+      if (env.BOLO_KV) {
+        const key = `research_${Date.now()}`;
+        await env.BOLO_KV.put(key, JSON.stringify({
+          topic,
+          findings,
+          timestamp: new Date().toISOString(),
+          source: 'cron'
+        }), { expirationTtl: 86400 * 30 });
+
+        await env.BOLO_KV.put('latest_research', JSON.stringify({
+          topic,
+          findings,
+          timestamp: new Date().toISOString(),
+          source: 'cron'
+        }));
+      }
+    } catch (err) {
+      if (env.BOLO_KV) {
+        await env.BOLO_KV.put(`cron_error_${Date.now()}`, JSON.stringify({
+          error: err.message,
+          timestamp: new Date().toISOString()
+        }), { expirationTtl: 86400 });
+      }
     }
   }
 };
