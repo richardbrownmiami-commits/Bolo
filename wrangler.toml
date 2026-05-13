@@ -1,6 +1,9 @@
-#:schema node_modules/wrangler/config-schema.json
-name = "bolt"
-compatibility_flags = ["nodejs_compat"]
-compatibility_date = "2025-03-28"
-pages_build_output_dir = "./build/client"
-send_metrics = false
+name = "bolo"
+main = "worker/index.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+GITHUB_REPO = "bolo"
+
+# Add these secrets via: wrangler secret put GITHUB_TOKEN
+# Add these secrets via: wrangler secret put GITHUB_OWNER
