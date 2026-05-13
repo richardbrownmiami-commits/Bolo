@@ -1,5 +1,5 @@
-// bolo — Cloudflare Worker brain v3.6
-// KeylessAI + Pollinations fallback + Memory (KV) + Research + Run + Log + /logs/list + /queue + Queue Consumer
+// bolo — Cloudflare Worker brain v3.7
+// KeylessAI + Pollinations fallback (w/ User-Agent) + Memory (KV) + Research + Run + Log + /logs/list + /queue + Queue Consumer
 
 const KEYLESS_API = 'https://hermes.ai.unturf.com/v1';
 const KEYLESS_MODEL = 'adamo1139/Hermes-3-Llama-3.1-8B-FP8-Dynamic';
@@ -36,8 +36,10 @@ async function callKeylessAI(messages, maxTokens = 500) {
 
 async function callPollinations(prompt) {
   const encoded = encodeURIComponent(prompt);
-  const res = await fetch(`${POLLINATIONS_API}/${encoded}`);
-  if (!res.ok) throw new Error(`Pollinations HTTP ${res.status}`);
+  const res = await fetch(`${POLLINATIONS_API}/${encoded}`, {
+    headers: { 'User-Agent': 'bolo-agent/3.7' }
+  });
+  if (!res.ok) throw new Error(`Pollinations ${res.status}`);
   return await res.text();
 }
 
@@ -61,18 +63,18 @@ export default {
 
     if (path === '/status') {
       return new Response(JSON.stringify({
-        status: 'alive', version: '3.6',
+        status: 'alive', version: '3.7',
         time: new Date().toISOString(),
         capabilities: ['chat', 'research', 'run', 'memory', 'models', 'status', 'log', 'logs/list', 'queue', 'queue-consumer'],
-        ai_backends: ['keyless-hermes', 'pollinations', 'openrouter-free'],
-        notes: 'v3.6: /research has 10s timeout on KeylessAI + Pollinations fallback. Queue consumer active.',
+        ai_backends: ['keyless-hermes', 'pollinations-ua', 'openrouter-free'],
+        notes: 'v3.7: Pollinations now sends User-Agent: bolo-agent/3.7 to avoid rate limits.',
       }), { headers: cors });
     }
 
     if (path === '/models') {
       return new Response(JSON.stringify({
         keyless: [KEYLESS_MODEL],
-        pollinations: ['text.pollinations.ai (free, no key, fallback)'],
+        pollinations: ['text.pollinations.ai (free, no key, User-Agent: bolo-agent/3.7)'],
         openrouter_free: [
           'google/gemma-3-27b-it:free',
           'mistralai/mistral-7b-instruct:free',
@@ -131,7 +133,9 @@ export default {
           backend = 'keyless';
         } catch (e) {
           const encoded = encodeURIComponent(`Research ${topic}: give summary, key facts, and recommendations`);
-          const pfRes = await fetch(`https://text.pollinations.ai/${encoded}`);
+          const pfRes = await fetch(`https://text.pollinations.ai/${encoded}`, {
+            headers: { 'User-Agent': 'bolo-agent/3.7' }
+          });
           findings = await pfRes.text();
           backend = 'pollinations-fallback';
         }
