@@ -2,8 +2,6 @@ name: Self Improve
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 8 * * *"
 
 jobs:
   discover:
@@ -23,7 +21,7 @@ models = data.get('data', [])
 free = [m for m in models if str(m.get('pricing', {}).get('prompt', '1')) == '0']
 print(f'Total free: {len(free)}')
 for m in free[:10]:
-    print(f'- {m.get("id", "unknown")}')
+    print(f'- {m.get('"'id'"', 'unknown')}')
 " >> findings.md
 
       - name: Commit findings
@@ -33,4 +31,4 @@ for m in free[:10]:
           git add findings.md
           git diff --staged --quiet || git commit -m "chore: auto research findings $(date +%Y-%m-%d)"
           git push
-# v3.6 re-index trigger
+
