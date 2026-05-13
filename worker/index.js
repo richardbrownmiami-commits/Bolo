@@ -1,4 +1,4 @@
-// bolo — Cloudflare Worker brain v3.5
+// bolo — Cloudflare Worker brain v3.6
 // KeylessAI + Pollinations fallback + Memory (KV) + Research + Run + Log + /logs/list + /queue + Queue Consumer
 
 const KEYLESS_API = 'https://hermes.ai.unturf.com/v1';
@@ -13,15 +13,25 @@ const cors = {
 };
 
 async function callKeylessAI(messages, maxTokens = 500) {
-  const res = await fetch(`${KEYLESS_API}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer dummy-api-key' },
-    body: JSON.stringify({ model: KEYLESS_MODEL, messages, max_tokens: maxTokens }),
-  });
-  if (!res.ok) throw new Error(`KeylessAI HTTP ${res.status}`);
-  const data = await res.json();
-  if (!data.choices?.[0]?.message?.content) throw new Error('KeylessAI: empty response');
-  return data.choices[0].message.content;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+  try {
+    const res = await fetch(`${KEYLESS_API}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer dummy-api-key' },
+      body: JSON.stringify({ model: KEYLESS_MODEL, messages, max_tokens: maxTokens }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) throw new Error(`KeylessAI HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data.choices?.[0]?.message?.content) throw new Error('KeylessAI: empty response');
+    return data.choices[0].message.content;
+  } catch (err) {
+    clearTimeout(timer);
+    if (err.name === 'AbortError') throw new Error('TIMEOUT');
+    throw err;
+  }
 }
 
 async function callPollinations(prompt) {
@@ -51,11 +61,11 @@ export default {
 
     if (path === '/status') {
       return new Response(JSON.stringify({
-        status: 'alive', version: '3.5',
+        status: 'alive', version: '3.6',
         time: new Date().toISOString(),
         capabilities: ['chat', 'research', 'run', 'memory', 'models', 'status', 'log', 'logs/list', 'queue', 'queue-consumer'],
         ai_backends: ['keyless-hermes', 'pollinations', 'openrouter-free'],
-        notes: 'v3.5: queue consumer added - processes queued tasks automatically and saves receipt to KV.'
+        notes: 'v3.6: /research has 10s timeout on KeylessAI + Pollinations fallback. Queue consumer active.',
       }), { headers: cors });
     }
 
@@ -112,20 +122,27 @@ export default {
     if (path === '/research' && request.method === 'POST') {
       try {
         const { topic = 'AI capabilities' } = await request.json();
-        const result = await callKeylessWithFallback([
-          { role: 'system', content: 'You are a research assistant. Give structured findings: Summary, Key Facts (3-5 points), Recommendations.' },
-          { role: 'user', content: `Research: ${topic}` }
-        ], 800);
+        let findings, backend;
+        try {
+          findings = await callKeylessAI([
+            { role: 'system', content: 'Research assistant. Format: Summary, Key Facts (3-5), Recommendations.' },
+            { role: 'user', content: `Research: ${topic}` }
+          ], 600);
+          backend = 'keyless';
+        } catch (e) {
+          const encoded = encodeURIComponent(`Research ${topic}: give summary, key facts, and recommendations`);
+          const pfRes = await fetch(`https://text.pollinations.ai/${encoded}`);
+          findings = await pfRes.text();
+          backend = 'pollinations-fallback';
+        }
         if (env.BOLO_KV) {
           const researchKey = `research_${Date.now()}`;
           await env.BOLO_KV.put(researchKey, JSON.stringify({
-            topic, findings: result.reply, backend: result.backend_used,
-            time: new Date().toISOString()
+            topic, findings, backend, time: new Date().toISOString()
           }), { expirationTtl: 86400 * 30 });
         }
         return new Response(JSON.stringify({
-          topic, findings: result.reply, model: result.model,
-          backend: result.backend_used, timestamp: new Date().toISOString()
+          topic, findings, backend, timestamp: new Date().toISOString()
         }), { headers: cors });
       } catch (err) {
         return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: cors });
