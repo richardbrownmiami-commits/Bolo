@@ -1,0 +1,62 @@
+name: Auto Research
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: "Research topic"
+        required: false
+        default: "latest free AI tools and APIs 2025"
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_TOKEN }}
+
+      - name: Research and append findings
+        env:
+          TOPIC: ${{ github.event.inputs.topic || 'latest free AI tools and APIs 2025' }}
+        run: |
+          echo ""
+          echo "## Research: $TOPIC"
+          echo "Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          
+          # Call bolo worker
+          RESULT=$(curl -s --max-time 25 -X POST https://bolo.richard-brown-miami.workers.dev/research \
+            -H "Content-Type: application/json" \
+            -d "{"topic":"$TOPIC"}" || echo "{"error":"worker unreachable"}")
+          echo "Worker result: $RESULT"
+          
+          # Check free OpenRouter models
+          echo "Checking OpenRouter free models..."
+          curl -s --max-time 15 "https://openrouter.ai/api/v1/models" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    free = [m for m in d.get("data",[]) if str(m.get("pricing",{}).get("prompt","1"))=="0"]
+    print(f"Free models: {len(free)}")
+    for m in free[:8]:
+        print("  -", m.get("id","?"), "ctx:", m.get("context_length","?"))
+except Exception as e:
+    print("Error:", str(e))
+"
+          
+          # Append to findings.md
+          {
+            echo ""
+            echo "---"
+            echo "## Research: $TOPIC"
+            echo "Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "$RESULT"
+          } >> findings.md
+          
+          git config user.email "bolo-bot@auto.dev"
+          git config user.name "Bolo Bot"
+          git add findings.md
+          git diff --staged --quiet || git commit -m "research: auto findings $(date -u +%Y-%m-%d)"
+          git push
