@@ -1,5 +1,5 @@
-// bolo — Cloudflare Worker brain v3
-// KeylessAI + OpenRouter free models + Memory (KV) + Research + Run + Log
+// bolo — Cloudflare Worker brain v3.2
+// KeylessAI + Pollinations + Cloudflare AI + Memory (KV) + Research + Run + Log
 
 const KEYLESS_API = 'https://hermes.ai.unturf.com/v1';
 const KEYLESS_MODEL = 'adamo1139/Hermes-3-Llama-3.1-8B-FP8-Dynamic';
@@ -51,6 +51,26 @@ async function callOpenRouter(messages, model, apiKey) {
   return data.choices?.[0]?.message?.content || data.error?.message || 'No response';
 }
 
+async function callCloudflareAI(message, env) {
+  const cfModel = '@cf/meta/llama-3-8b-instruct';
+  const accountId = env.CF_ACCOUNT_ID;
+  const token = env.CF_AI_TOKEN;
+  if (!accountId || !token) return { reply: 'CF_ACCOUNT_ID or CF_AI_TOKEN not set', model: cfModel };
+  const cfRes = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${cfModel}`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ messages: [{ role: 'user', content: message }] }),
+    }
+  );
+  const cfData = await cfRes.json();
+  return { reply: cfData.result?.response || cfData.error || JSON.stringify(cfData.errors), model: cfModel };
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -61,10 +81,10 @@ export default {
     // Health check
     if (path === '/status') {
       return new Response(JSON.stringify({
-        status: 'alive', version: '3.1',
+        status: 'alive', version: '3.2',
         time: new Date().toISOString(),
         capabilities: ['chat', 'research', 'run', 'memory', 'models', 'status', 'log'],
-        ai_backends: ['keyless-hermes', 'pollinations', 'openrouter-free']
+        ai_backends: ['keyless-hermes', 'pollinations', 'openrouter-free', 'cloudflare-ai']
       }), { headers: cors });
     }
 
@@ -73,7 +93,8 @@ export default {
       return new Response(JSON.stringify({
         keyless: [KEYLESS_MODEL],
         pollinations: ['text.pollinations.ai (free, no key)'],
-        openrouter_free: OPENROUTER_FREE_MODELS
+        openrouter_free: OPENROUTER_FREE_MODELS,
+        cloudflare_ai: ['@cf/meta/llama-3-8b-instruct']
       }), { headers: cors });
     }
 
@@ -88,6 +109,10 @@ export default {
         } else if (backend === 'openrouter' && env.OPENROUTER_KEY) {
           model = OPENROUTER_FREE_MODELS[0];
           reply = await callOpenRouter([{ role: 'user', content: message }], model, env.OPENROUTER_KEY);
+        } else if (backend === 'cloudflare') {
+          const cfResult = await callCloudflareAI(message, env);
+          reply = cfResult.reply;
+          model = cfResult.model;
         } else {
           reply = await callKeylessAI([
             { role: 'system', content: 'You are bolo, an autonomous agent. Be concise.' },
@@ -179,4 +204,3 @@ export default {
     return new Response(JSON.stringify({ error: 'Not found', paths: ['/status', '/models', '/chat', '/research', '/memory', '/run', '/log'] }), { status: 404, headers: cors });
   }
 };
-
