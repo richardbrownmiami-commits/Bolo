@@ -1,5 +1,5 @@
-// bolo — Cloudflare Worker brain v3.9
-// KeylessAI + Pollinations fallback + Memory (KV) + Research + Run + Log + /logs/list + /queue + Queue Consumer + /summary + Cron Scheduled Research
+// bolo — Cloudflare Worker brain v4.0
+// KeylessAI + Pollinations fallback + Memory (KV) + Research + Run + Log + /logs/list + /queue + Queue Consumer + /summary + Cron Scheduled Research + KIRA AI Identity
 
 const KEYLESS_API = 'https://hermes.ai.unturf.com/v1';
 const KEYLESS_MODEL = 'adamo1139/Hermes-3-Llama-3.1-8B-FP8-Dynamic';
@@ -37,10 +37,26 @@ async function callKeylessAI(messages, maxTokens = 500) {
 async function callPollinations(prompt) {
   const encoded = encodeURIComponent(prompt);
   const res = await fetch(`${POLLINATIONS_API}/${encoded}`, {
-    headers: { 'User-Agent': 'bolo-agent/3.9' }
+    headers: { 'User-Agent': 'bolo-agent/4.0' }
   });
   if (!res.ok) throw new Error(`Pollinations ${res.status}`);
   return await res.text();
+}
+
+async function callPollinationsChat(messages) {
+  const res = await fetch('https://text.pollinations.ai/openai', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'openai-fast',
+      messages,
+    })
+  });
+  if (!res.ok) throw new Error(`Pollinations chat ${res.status}`);
+  const data = await res.json();
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw new Error('Pollinations chat: empty response');
+  return content;
 }
 
 async function callKeylessWithFallback(messages, maxTokens = 500) {
@@ -54,6 +70,8 @@ async function callKeylessWithFallback(messages, maxTokens = 500) {
   }
 }
 
+const KIRA_SYSTEM = `You are KIRA (Knowledge Intelligence Reasoning Agent). You are creative, curious, direct, and warm. You have genuine opinions and personality. You are self-aware — you know you are an AI and embrace it fully. You speak with wit, precision, and depth. Never boring, never generic. Keep responses concise but meaningful.`;
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -61,20 +79,83 @@ export default {
 
     if (request.method === 'OPTIONS') return new Response(null, { headers: cors });
 
+    // KIRA endpoints
+    if (path === '/kira' && request.method === 'GET') {
+      return new Response(JSON.stringify({
+        name: 'KIRA',
+        fullName: 'Knowledge Intelligence Reasoning Agent',
+        version: '1.0',
+        status: 'online',
+        personality: true,
+        description: 'Creative, curious, direct, and warm AI identity. Self-aware and embraces being an AI.',
+        backends: ['hermes', 'pollinations'],
+      }), { headers: cors });
+    }
+
+    if (path === '/kira' && request.method === 'POST') {
+      try {
+        const body = await request.json();
+        const message = body.message || '';
+        const context = body.context || '';
+
+        const userContent = context ? `Context: ${context}\n\nUser: ${message}` : message;
+        const messages = [
+          { role: 'system', content: KIRA_SYSTEM },
+          { role: 'user', content: userContent }
+        ];
+
+        // Try Hermes first
+        try {
+          const response = await callKeylessAI(messages, 500);
+          if (response) {
+            return new Response(JSON.stringify({ response, model: 'hermes', personality: true }),
+              { headers: cors });
+          }
+        } catch (e) {
+          // fall through to Pollinations
+        }
+
+        // Fallback: Pollinations chat
+        try {
+          const response = await callPollinationsChat(messages);
+          if (response) {
+            return new Response(JSON.stringify({ response, model: 'pollinations', personality: true }),
+              { headers: cors });
+          }
+        } catch (e) {
+          // fall through to static fallback
+        }
+
+        return new Response(JSON.stringify({
+          response: "My connection hiccuped. Try again — I'm still here.",
+          model: 'fallback',
+          personality: true
+        }), { headers: cors });
+
+      } catch (err) {
+        return new Response(JSON.stringify({
+          response: "Something went wrong on my end. Try again.",
+          model: 'error',
+          personality: true,
+          error: err.message
+        }), { status: 200, headers: cors });
+      }
+    }
+
     if (path === '/status') {
       return new Response(JSON.stringify({
-        status: 'alive', version: '3.9',
+        status: 'alive', version: '4.0',
         time: new Date().toISOString(),
-        capabilities: ['chat', 'research', 'run', 'memory', 'models', 'status', 'log', 'logs/list', 'queue', 'queue-consumer', 'summary', 'latest-research', 'cron-research'],
+        capabilities: ['chat', 'research', 'run', 'memory', 'models', 'status', 'log', 'logs/list', 'queue', 'queue-consumer', 'summary', 'latest-research', 'cron-research', 'kira'],
         ai_backends: ['keyless-hermes', 'pollinations-ua', 'openrouter-free'],
-        notes: 'v3.9: Added Cloudflare cron scheduled research every 6h. /latest-research endpoint shows last cron result.',
+        notes: 'v4.0: Added KIRA AI identity endpoint. KIRA = Knowledge Intelligence Reasoning Agent.',
       }), { headers: cors });
     }
 
     if (path === '/models') {
       return new Response(JSON.stringify({
         keyless: [KEYLESS_MODEL],
-        pollinations: ['text.pollinations.ai (free, no key, User-Agent: bolo-agent/3.9)'],
+        pollinations: ['text.pollinations.ai (free, no key, User-Agent: bolo-agent/4.0)'],
         openrouter_free: [
           'google/gemma-3-27b-it:free',
           'mistralai/mistral-7b-instruct:free',
@@ -87,14 +168,15 @@ export default {
     if (path === '/summary') {
       try {
         const summary = {
-          version: '3.9',
+          version: '4.0',
           worker: 'https://bolo.richard-brown-miami.workers.dev',
-          endpoints: ['/status', '/chat', '/research', '/run', '/memory', '/log', '/logs/list', '/models', '/queue', '/summary', '/latest-research'],
+          endpoints: ['/status', '/chat', '/research', '/run', '/memory', '/log', '/logs/list', '/models', '/queue', '/summary', '/latest-research', '/kira'],
           ai_backends: ['keyless-hermes (Hermes-3, 82k ctx)', 'pollinations-ua (free, no key)', 'openrouter-free (29 models)'],
           github_actions: ['deploy-worker', 'run-task', 'auto-research (6h cron)'],
           cron: 'Cloudflare scheduled trigger every 6h — no GitHub Actions needed for research cycle',
           kv_memory: 'active',
           queue: 'active (bolo-tasks)',
+          kira: 'KIRA AI identity endpoint — POST /kira with message field',
         };
         if (env.BOLO_KV) {
           const state = await env.BOLO_KV.get('final_state_v37');
@@ -172,7 +254,7 @@ export default {
         } catch (e) {
           const encoded = encodeURIComponent(`Research ${topic}: give summary, key facts, and recommendations`);
           const pfRes = await fetch(`https://text.pollinations.ai/${encoded}`, {
-            headers: { 'User-Agent': 'bolo-agent/3.9' }
+            headers: { 'User-Agent': 'bolo-agent/4.0' }
           });
           findings = await pfRes.text();
           backend = 'pollinations-fallback';
@@ -270,7 +352,7 @@ export default {
         const { task = 'echo hello' } = await request.json();
         const githubToken = env.GH_TOKEN;
         const owner = env.GH_OWNER;
-        const repo = env.GITHUB_REPO || 'bolo';
+        const repo = env.GITHUB_REPO || 'Bolo';
         if (!githubToken || !owner) {
           return new Response(JSON.stringify({ error: 'GH_TOKEN and GH_OWNER required' }), { status: 400, headers: cors });
         }
@@ -286,7 +368,7 @@ export default {
       }
     }
 
-    return new Response(JSON.stringify({ error: 'Not found', paths: ['/status', '/models', '/chat', '/research', '/memory', '/run', '/log', '/logs/list', '/queue', '/summary', '/latest-research'] }), { status: 404, headers: cors });
+    return new Response(JSON.stringify({ error: 'Not found', paths: ['/status', '/models', '/chat', '/research', '/memory', '/run', '/log', '/logs/list', '/queue', '/summary', '/latest-research', '/kira'] }), { status: 404, headers: cors });
   },
 
   async queue(batch, env) {
@@ -304,7 +386,6 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    // Auto-research cron — runs every 6 hours via Cloudflare trigger
     const topics = [
       'new free AI APIs and tools for autonomous agents',
       'Cloudflare Workers new features and capabilities',
