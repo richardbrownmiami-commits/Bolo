@@ -1,0 +1,46 @@
+name: Self Improve
+
+on:
+  schedule:
+    - cron: "0 8 * * *"  # daily at 8am UTC
+  workflow_dispatch:
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_TOKEN }}
+
+      - name: Check free OpenRouter models
+        run: |
+          echo "## Free OpenRouter Models $(date)" >> findings.md
+          curl -s "https://openrouter.ai/api/v1/models" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          free = [m for m in data.get('data',[]) if str(m.get('pricing',{}).get('prompt','1'))=='0']
+          print(f'Total free: {len(free)}')
+          for m in free[:10]:
+              print(f'- {m["id"]}')
+          " >> findings.md
+
+      - name: Research via bolo worker
+        run: |
+          echo "" >> findings.md
+          echo "## AI Research $(date)" >> findings.md
+          curl -s -X POST https://bolo.richard-brown-miami.workers.dev/research \
+            -H "Content-Type: application/json" \
+            -d '{"topic":"new free AI tools and APIs for autonomous agents, latest 2025 developments"}' | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          print(d.get('findings','No findings'))
+          " >> findings.md || echo "Research failed" >> findings.md
+
+      - name: Commit findings
+        run: |
+          git config user.email "bolo-agent@auto.dev"
+          git config user.name "Bolo Agent"
+          git add findings.md
+          git diff --staged --quiet || git commit -m "chore: auto research findings $(date +%Y-%m-%d)"
+          git push
