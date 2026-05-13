@@ -1,18 +1,9 @@
-// bolo — Cloudflare Worker brain v3.2
-// KeylessAI + Pollinations + Cloudflare AI + Memory (KV) + Research + Run + Log
+// bolo — Cloudflare Worker brain v3.3
+// KeylessAI + Pollinations fallback + Memory (KV) + Research + Run + Log + /logs/list
 
 const KEYLESS_API = 'https://hermes.ai.unturf.com/v1';
 const KEYLESS_MODEL = 'adamo1139/Hermes-3-Llama-3.1-8B-FP8-Dynamic';
 const POLLINATIONS_API = 'https://text.pollinations.ai';
-
-// OpenRouter free models (no API key for some, or free tier)
-const OPENROUTER_FREE_MODELS = [
-  'google/gemma-3-27b-it:free',
-  'google/gemma-4-26b-a4b-it:free',
-  'mistralai/mistral-7b-instruct:free',
-  'meta-llama/llama-4-scout:free',
-  'deepseek/deepseek-r1:free',
-];
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -27,48 +18,29 @@ async function callKeylessAI(messages, maxTokens = 500) {
     headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer dummy-api-key' },
     body: JSON.stringify({ model: KEYLESS_MODEL, messages, max_tokens: maxTokens }),
   });
+  if (!res.ok) throw new Error(`KeylessAI HTTP ${res.status}`);
   const data = await res.json();
-  return data.choices?.[0]?.message?.content || 'No response';
+  if (!data.choices?.[0]?.message?.content) throw new Error('KeylessAI: empty response');
+  return data.choices[0].message.content;
 }
 
 async function callPollinations(prompt) {
   const encoded = encodeURIComponent(prompt);
   const res = await fetch(`${POLLINATIONS_API}/${encoded}`);
+  if (!res.ok) throw new Error(`Pollinations HTTP ${res.status}`);
   return await res.text();
 }
 
-async function callOpenRouter(messages, model, apiKey) {
-  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-      'HTTP-Referer': 'https://bolo.richard-brown-miami.workers.dev',
-    },
-    body: JSON.stringify({ model, messages, max_tokens: 500 }),
-  });
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content || data.error?.message || 'No response';
-}
-
-async function callCloudflareAI(message, env) {
-  const cfModel = '@cf/meta/llama-3-8b-instruct';
-  const accountId = env.CF_ACCOUNT_ID;
-  const token = env.CF_AI_TOKEN;
-  if (!accountId || !token) return { reply: 'CF_ACCOUNT_ID or CF_AI_TOKEN not set', model: cfModel };
-  const cfRes = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${cfModel}`,
-    {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ messages: [{ role: 'user', content: message }] }),
-    }
-  );
-  const cfData = await cfRes.json();
-  return { reply: cfData.result?.response || cfData.error || JSON.stringify(cfData.errors), model: cfModel };
+async function callKeylessWithFallback(messages, maxTokens = 500) {
+  try {
+    const reply = await callKeylessAI(messages, maxTokens);
+    return { reply, model: KEYLESS_MODEL, backend_used: 'keyless' };
+  } catch (err) {
+    // Fallback to Pollinations
+    const prompt = messages.map(m => m.content).join('\n');
+    const reply = await callPollinations(prompt);
+    return { reply, model: 'pollinations/text', backend_used: 'pollinations_fallback', keyless_error: err.message };
+  }
 }
 
 export default {
@@ -81,10 +53,11 @@ export default {
     // Health check
     if (path === '/status') {
       return new Response(JSON.stringify({
-        status: 'alive', version: '3.2',
+        status: 'alive', version: '3.3',
         time: new Date().toISOString(),
-        capabilities: ['chat', 'research', 'run', 'memory', 'models', 'status', 'log'],
-        ai_backends: ['keyless-hermes', 'pollinations', 'openrouter-free', 'cloudflare-ai']
+        capabilities: ['chat', 'research', 'run', 'memory', 'models', 'status', 'log', 'logs/list'],
+        ai_backends: ['keyless-hermes', 'pollinations', 'openrouter-free'],
+        notes: 'keyless auto-falls-back to pollinations on failure'
       }), { headers: cors });
     }
 
@@ -92,9 +65,13 @@ export default {
     if (path === '/models') {
       return new Response(JSON.stringify({
         keyless: [KEYLESS_MODEL],
-        pollinations: ['text.pollinations.ai (free, no key)'],
-        openrouter_free: OPENROUTER_FREE_MODELS,
-        cloudflare_ai: ['@cf/meta/llama-3-8b-instruct']
+        pollinations: ['text.pollinations.ai (free, no key, fallback)'],
+        openrouter_free: [
+          'google/gemma-3-27b-it:free',
+          'mistralai/mistral-7b-instruct:free',
+          'meta-llama/llama-4-scout:free',
+          'deepseek/deepseek-r1:free',
+        ]
       }), { headers: cors });
     }
 
@@ -102,25 +79,36 @@ export default {
     if (path === '/chat' && request.method === 'POST') {
       try {
         const { message = 'Hello', backend = 'keyless' } = await request.json();
-        let reply, model;
+        let reply, model, backend_used;
         if (backend === 'pollinations') {
           reply = await callPollinations(message);
           model = 'pollinations/text';
+          backend_used = 'pollinations';
         } else if (backend === 'openrouter' && env.OPENROUTER_KEY) {
-          model = OPENROUTER_FREE_MODELS[0];
-          reply = await callOpenRouter([{ role: 'user', content: message }], model, env.OPENROUTER_KEY);
-        } else if (backend === 'cloudflare') {
-          const cfResult = await callCloudflareAI(message, env);
-          reply = cfResult.reply;
-          model = cfResult.model;
+          const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${env.OPENROUTER_KEY}`,
+              'HTTP-Referer': 'https://bolo.richard-brown-miami.workers.dev',
+            },
+            body: JSON.stringify({ model: 'mistralai/mistral-7b-instruct:free', messages: [{ role: 'user', content: message }], max_tokens: 500 }),
+          });
+          const data = await res.json();
+          reply = data.choices?.[0]?.message?.content || data.error?.message || 'No response';
+          model = 'mistralai/mistral-7b-instruct:free';
+          backend_used = 'openrouter';
         } else {
-          reply = await callKeylessAI([
+          // keyless with pollinations fallback
+          const result = await callKeylessWithFallback([
             { role: 'system', content: 'You are bolo, an autonomous agent. Be concise.' },
             { role: 'user', content: message }
           ]);
-          model = KEYLESS_MODEL;
+          reply = result.reply;
+          model = result.model;
+          backend_used = result.backend_used;
         }
-        return new Response(JSON.stringify({ reply, model, backend, timestamp: new Date().toISOString() }), { headers: cors });
+        return new Response(JSON.stringify({ reply, model, backend: backend_used, timestamp: new Date().toISOString() }), { headers: cors });
       } catch (err) {
         return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: cors });
       }
@@ -130,17 +118,30 @@ export default {
     if (path === '/research' && request.method === 'POST') {
       try {
         const { topic = 'AI capabilities' } = await request.json();
-        const reply = await callKeylessAI([
+        const result = await callKeylessWithFallback([
           { role: 'system', content: 'You are a research assistant. Give structured findings: Summary, Key Facts (3-5 points), Recommendations.' },
           { role: 'user', content: `Research: ${topic}` }
         ], 800);
-        return new Response(JSON.stringify({ topic, findings: reply, timestamp: new Date().toISOString() }), { headers: cors });
+
+        // Save to KV if available
+        if (env.BOLO_KV) {
+          const researchKey = `research_${Date.now()}`;
+          await env.BOLO_KV.put(researchKey, JSON.stringify({
+            topic, findings: result.reply, backend: result.backend_used,
+            time: new Date().toISOString()
+          }), { expirationTtl: 86400 * 30 });
+        }
+
+        return new Response(JSON.stringify({
+          topic, findings: result.reply, model: result.model,
+          backend: result.backend_used, timestamp: new Date().toISOString()
+        }), { headers: cors });
       } catch (err) {
         return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: cors });
       }
     }
 
-    // Memory store (using Workers KV if available, else in-memory cache)
+    // Memory store
     if (path === '/memory') {
       try {
         if (request.method === 'POST') {
@@ -164,7 +165,7 @@ export default {
       }
     }
 
-    // Activity log
+    // Activity log — write
     if (path === '/log' && request.method === 'POST') {
       try {
         const { event, data } = await request.json();
@@ -174,6 +175,24 @@ export default {
           return new Response(JSON.stringify({ logged: true, key: logKey }), { headers: cors });
         }
         return new Response(JSON.stringify({ logged: false, reason: 'KV not configured' }), { headers: cors });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: cors });
+      }
+    }
+
+    // List recent logs
+    if (path === '/logs/list' && request.method === 'GET') {
+      try {
+        if (env.BOLO_KV) {
+          const list = await env.BOLO_KV.list({ prefix: 'log_', limit: 20 });
+          const logs = [];
+          for (const key of list.keys) {
+            const val = await env.BOLO_KV.get(key.name);
+            if (val) logs.push({ key: key.name, ...JSON.parse(val) });
+          }
+          return new Response(JSON.stringify({ count: logs.length, logs }), { headers: cors });
+        }
+        return new Response(JSON.stringify({ error: 'KV not configured' }), { headers: cors });
       } catch (err) {
         return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: cors });
       }
@@ -201,6 +220,6 @@ export default {
       }
     }
 
-    return new Response(JSON.stringify({ error: 'Not found', paths: ['/status', '/models', '/chat', '/research', '/memory', '/run', '/log'] }), { status: 404, headers: cors });
+    return new Response(JSON.stringify({ error: 'Not found', paths: ['/status', '/models', '/chat', '/research', '/memory', '/run', '/log', '/logs/list'] }), { status: 404, headers: cors });
   }
 };
