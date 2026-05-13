@@ -1,9 +1,9 @@
 name: Self Improve
 
 on:
-  schedule:
-    - cron: "0 8 * * *"  # daily at 8am UTC
   workflow_dispatch:
+  schedule:
+    - cron: "0 8 * * *"
 
 jobs:
   discover:
@@ -23,25 +23,8 @@ models = data.get('data', [])
 free = [m for m in models if str(m.get('pricing', {}).get('prompt', '1')) == '0']
 print(f'Total free: {len(free)}')
 for m in free[:10]:
-    model_id = m.get('id', 'unknown')
-    print(f'- {model_id}')
+    print(f'- {m.get(\"id\", \"unknown\")}')
 " >> findings.md
-
-      - name: Research via bolo worker
-        run: |
-          echo "" >> findings.md
-          echo "## AI Research $(date)" >> findings.md
-          RESULT=$(curl -s -X POST https://bolo.richard-brown-miami.workers.dev/research \
-            -H "Content-Type: application/json" \
-            -d "{\"topic\":\"new free AI tools and APIs for autonomous agents 2025\"}" 2>/dev/null)
-          echo "$RESULT" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    print(d.get('findings', d.get('result', str(d)[:500])))
-except:
-    print(sys.stdin.read()[:500])
-" >> findings.md || echo "Research endpoint unavailable" >> findings.md
 
       - name: Commit findings
         run: |
