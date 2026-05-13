@@ -7,3 +7,7 @@ GITHUB_REPO = "bolo"
 
 # Add these secrets via: wrangler secret put GITHUB_TOKEN
 # Add these secrets via: wrangler secret put GITHUB_OWNER
+
+[[kv_namespaces]]
+binding = "BOLO_KV"
+id = "23e533156f824dc7a11efeb28bf467b3"
