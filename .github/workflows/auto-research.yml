@@ -29,22 +29,22 @@ jobs:
           # Call bolo worker
           RESULT=$(curl -s --max-time 25 -X POST https://bolo.richard-brown-miami.workers.dev/research \
             -H "Content-Type: application/json" \
-            -d "{"topic":"$TOPIC"}" || echo "{"error":"worker unreachable"}")
+            --data-raw "{\"topic\":\"$TOPIC\"}" || echo "{\"error\":\"worker unreachable\"}")
           echo "Worker result: $RESULT"
           
-          # Check free OpenRouter models
+          # Check free OpenRouter models — fixed field parsing
           echo "Checking OpenRouter free models..."
-          curl -s --max-time 15 "https://openrouter.ai/api/v1/models" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    free = [m for m in d.get("data",[]) if str(m.get("pricing",{}).get("prompt","1"))=="0"]
-    print(f"Free models: {len(free)}")
-    for m in free[:8]:
-        print("  -", m.get("id","?"), "ctx:", m.get("context_length","?"))
-except Exception as e:
-    print("Error:", str(e))
-"
+          curl -s --max-time 15 "https://openrouter.ai/api/v1/models" > /tmp/or_models.json
+          python3 << 'PYEOF'
+import json
+with open("/tmp/or_models.json") as f:
+    d = json.load(f)
+models = d.get("data", [])
+free = [m for m in models if str(m.get("pricing", {}).get("prompt", "1")) == "0"]
+print(f"Free models: {len(free)}")
+for m in free[:8]:
+    print("  -", m.get("id", "?"), "ctx:", m.get("context_length", "?"))
+PYEOF
           
           # Append to findings.md
           {
@@ -60,3 +60,4 @@ except Exception as e:
           git add findings.md
           git diff --staged --quiet || git commit -m "research: auto findings $(date -u +%Y-%m-%d)"
           git push
+
